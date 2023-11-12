@@ -18,7 +18,10 @@ def manejar_cliente(socket_cliente, archivo_imagen, cola_respuestas):
         imagen_procesada = f.read()
 
     cola_respuestas.put(imagen_procesada)
-    socket_cliente.close()
+
+    # Verifica si el socket_cliente no es None antes de cerrarlo
+    if socket_cliente:
+        socket_cliente.close()
 
 def servicio_no_concurrente(cola_trabajo, cola_respuestas):
     while True:
