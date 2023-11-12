@@ -1,0 +1,33 @@
+Descargar Obligatorio:
+
+pip install -r requirements.txt
+
+En requirements.txt:
+
+Solo hay opencv-python
+
+
+A:
+
+Ejecuta el script utilizando el siguiente comando:
+
+python3 MonoConvertServer.py -i <dirección_ip> -p <puerto> -f <nombre_de_archivo_imagen>
+
+Reemplaza <dirección_ip> con la dirección IP en la que deseas que el servidor escuche, <puerto> con el número de puerto deseado, 
+<nombre_del_archivo> con el nombre del archivo de imagen que deseas procesar y 
+<factor_de_escala> con el factor de escala deseado para reducir la imagen.
+
+
+
+B:
+
+Ejecuta el script utilizando el siguiente comando:
+
+python3 ImageScaler.py -i <dirección_ip> -p <puerto> -f <nombre_del_archivo> -s <factor_de_escala>
+
+
+Reemplaza <dirección_ip> con la dirección IP en la que deseas que el servidor escuche, <puerto> con el número de puerto deseado, 
+<nombre_del_archivo> con el nombre del archivo de imagen que deseas procesar y 
+<factor_de_escala> con el factor de escala deseado para reducir la imagen.
+
+C:
