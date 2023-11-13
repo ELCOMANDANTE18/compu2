@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Uploader y Redimensionador de Imágenes</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #e6e6e6;
+            margin: 0;
+            padding: 0;
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+            padding: 20px;
+            background-color: #008080;
+            margin: 0;
+        }
+
+        form {
+            max-width: 400px;
+            margin: 20px auto;
+            padding: 20px;
+            background-color: #fff;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+
+        label {
+            display: block;
+            margin: 10px 0 5px;
+            color: #333;
+        }
+
+        input {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 10px;
+            box-sizing: border-box;
+        }
+
+        input[type="submit"] {
+            background-color: #4caf50;
+            color: #fff;
+            cursor: pointer;
+        }
+
+        input[type="submit"]:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Subidor y Re-dimensionador de Imágenes</h1>
+    <form action="http://127.0.0.1:8000" method="post" enctype="multipart/form-data">
+        <label for="file">Escoger imagen:</label>
+        <input type="file" name="file" accept="image/*" required>
+        <br>
+        <label for="scale_factor">Factor de Escala:</label>
+        <input type="number" name="scale_factor" step="0.1" min="0.1" max="2.0" value="1.0" required>
+        <br>
+        <input type="submit" value="Subir y Redimensionar">
+    </form>
+</body>
+
+</html>
+    

@@ -11,7 +11,7 @@ A:
 
 Ejecuta el script utilizando el siguiente comando:
 
-python3 MonoConvertServer.py -i <dirección_ip> -p <puerto> -f <nombre_de_archivo_imagen>
+python3 main.py -i <dirección_ip> -p <puerto> -f <nombre_de_archivo_imagen>
 
 Reemplaza <dirección_ip> con la dirección IP en la que deseas que el servidor escuche, <puerto> con el número de puerto deseado, 
 <nombre_del_archivo> con el nombre del archivo de imagen que deseas procesar y 
@@ -23,7 +23,7 @@ B:
 
 Ejecuta el script utilizando el siguiente comando:
 
-python3 ImageScaler.py -i <dirección_ip> -p <puerto> -f <nombre_del_archivo> -s <factor_de_escala>
+python3 scaled.py -i <dirección_ip> -p <puerto> -f <nombre_del_archivo> -s <factor_de_escala>
 
 
 Reemplaza <dirección_ip> con la dirección IP en la que deseas que el servidor escuche, <puerto> con el número de puerto deseado, 
