@@ -1,9 +1,14 @@
 import argparse
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 from io import BytesIO
-import socket
+from socketserver import ThreadingMixIn
 from PIL import Image
-import time  # Importa el módulo time para obtener el timestamp
+import socket
+import threading
+import time
+
+class ThreadingHTTPServerV6(ThreadingMixIn, HTTPServer):
+    address_family = socket.AF_INET6
 
 def procesar_imagen_entrada(archivo_imagen, factor_escala):
     try:
@@ -43,16 +48,13 @@ class ManejadorImagenes(SimpleHTTPRequestHandler):
             imagen_final = procesar_imagen_entrada(BytesIO(bytes_imagen), factor_escala=0.5)
 
             if imagen_final is None:
-                # No se pudo procesar la imagen, enviar una respuesta de error si es necesario
                 self.send_response(500)
                 self.end_headers()
                 return
 
             print(f"Servidor: Enviando imagen al servidor de escalado...")
 
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as socket_conexion:
-                direccion_escalado = ('localhost', 8000)
-                socket_conexion.connect(direccion_escalado)
+            with socket.create_connection(('localhost', 8000), timeout=5) as socket_conexion:
                 enviar_imagen_final(socket_conexion, imagen_final)
 
                 longitud_datos = int.from_bytes(socket_conexion.recv(4), byteorder='big')
@@ -60,7 +62,6 @@ class ManejadorImagenes(SimpleHTTPRequestHandler):
 
                 print("Servidor: Recibida imagen escalada del servidor de escalado.")
 
-            # Genera un nombre de archivo único utilizando el timestamp
             timestamp = int(time.time())
             nombre_archivo_escalada_principal = f"procesamiento_magico_{timestamp}.jpg"
             with open(nombre_archivo_escalada_principal, 'wb') as archivo:
@@ -78,10 +79,16 @@ class ManejadorImagenes(SimpleHTTPRequestHandler):
 
 def iniciar_servidor(direccion_ip, puerto_escucha):
     manejador = ManejadorImagenes
+    direccion = (direccion_ip, puerto_escucha)
 
-    with HTTPServer((direccion_ip, puerto_escucha), manejador) as servidor_http:
-        print(f"Servidor escuchando en {direccion_ip}:{puerto_escucha}")
-        servidor_http.serve_forever()
+    try:
+        servidor_http = ThreadingHTTPServerV6 if ':' in direccion_ip else HTTPServer
+        with servidor_http((direccion_ip, puerto_escucha), manejador) as servidor:
+            print(f"Servidor escuchando en {direccion[0]}:{direccion[1]}")
+            servidor.serve_forever()
+
+    except KeyboardInterrupt:
+        print('Deteniendo el servidor.')
 
 def main():
     analizador = argparse.ArgumentParser(description='Procesamiento de imágenes')

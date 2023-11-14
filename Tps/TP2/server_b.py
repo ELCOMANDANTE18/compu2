@@ -47,7 +47,7 @@ def enviar_imagen_redimensionada(sock, imagen_bytes_redimensionada):
         sock.close()
 
 def servidor_redimension(ip, puerto, factor_redimension):
-    socket_servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    socket_servidor = socket.socket(socket.AF_INET6 if ':' in ip else socket.AF_INET, socket.SOCK_STREAM)
     try:
         socket_servidor.bind((ip, puerto))
     except socket.error:
@@ -82,3 +82,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+    
+    
