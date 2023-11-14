@@ -3,6 +3,7 @@ from http.server import SimpleHTTPRequestHandler, HTTPServer
 from io import BytesIO
 import socket
 from PIL import Image
+import time  # Importa el módulo time para obtener el timestamp
 
 def procesar_imagen_entrada(archivo_imagen, factor_escala):
     try:
@@ -24,6 +25,7 @@ def procesar_imagen_entrada(archivo_imagen, factor_escala):
 
     except Exception as error:
         print(f"Error procesando la imagen: {error}")
+        return None
 
 def enviar_imagen_final(socket, imagen_bytes_final):
     try:
@@ -40,10 +42,16 @@ class ManejadorImagenes(SimpleHTTPRequestHandler):
 
             imagen_final = procesar_imagen_entrada(BytesIO(bytes_imagen), factor_escala=0.5)
 
+            if imagen_final is None:
+                # No se pudo procesar la imagen, enviar una respuesta de error si es necesario
+                self.send_response(500)
+                self.end_headers()
+                return
+
             print(f"Servidor: Enviando imagen al servidor de escalado...")
 
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as socket_conexion:
-                direccion_escalado = ('localhost', 5051)
+                direccion_escalado = ('localhost', 8000)
                 socket_conexion.connect(direccion_escalado)
                 enviar_imagen_final(socket_conexion, imagen_final)
 
@@ -52,7 +60,9 @@ class ManejadorImagenes(SimpleHTTPRequestHandler):
 
                 print("Servidor: Recibida imagen escalada del servidor de escalado.")
 
-            nombre_archivo_escalada_principal = "imagen_procesada.jpg"
+            # Genera un nombre de archivo único utilizando el timestamp
+            timestamp = int(time.time())
+            nombre_archivo_escalada_principal = f"procesamiento_magico_{timestamp}.jpg"
             with open(nombre_archivo_escalada_principal, 'wb') as archivo:
                 archivo.write(bytes_imagen_escalada)
 
@@ -61,7 +71,7 @@ class ManejadorImagenes(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(bytes_imagen_escalada)
 
-            print("Servidor: Imagen procesada enviada al cliente y almacenada localmente.")
+            print(f"Servidor: Imagen procesada enviada al cliente y almacenada como {nombre_archivo_escalada_principal}.")
 
         except Exception as error:
             print(f"Error manejando la solicitud POST: {error}")
