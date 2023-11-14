@@ -50,4 +50,6 @@ python3 server_b.py -i :: -p 8000 -s 0.5
 curl -X POST -H "Content-Type: image/jpeg" --data-binary "@foto.jpg" http://localhost:8080
 
 curl -X POST -H "Content-Type: image/jpeg" --data-binary "@compu.jpg" http://localhost:8080
+```
 
+#### Las imagenes se guardaran en el directorio.
