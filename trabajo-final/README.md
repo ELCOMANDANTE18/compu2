@@ -70,9 +70,6 @@ En las siguientes fases se planea:
 
 ---
 
-## 🤝 Contribuciones
-
-Si quieres contribuir: abre un issue con tu propuesta o envía PRs con cambios. Incluye pruebas y una breve descripción del objetivo del cambio.
 
 ---
 

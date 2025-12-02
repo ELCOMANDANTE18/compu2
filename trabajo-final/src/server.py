@@ -1,8 +1,7 @@
 # src/server.py
 """
-Servidor principal del Sistema de Coordinación para Equipos de Estudio (SCEE).
-Utiliza asyncio para manejar múltiples clientes concurrentes.
-Etapa 2: Autenticación (IPC + DB) y Login obligatorio.
+Servidor principal SCEE.
+Etapa 3.5: Soporte para Salas de Chat, Persistencia y Navegación (Salir de sala).
 """
 
 import asyncio
@@ -13,253 +12,211 @@ from . import protocol
 from . import db_manager
 from . import auth_process
 
-# Configuración básica de logging
 logging.basicConfig(level=logging.INFO, format='[SERVER] %(asctime)s - %(message)s')
-
-# --- ESTA ES LA LÍNEA CLAVE ---
-# Definimos 'log' para usarlo en todo el módulo.
 log = logging.getLogger(__name__)
-# -----------------------------
 
 class Server:
     def __init__(self, host, port):
         self.host = host
         self.port = port
-        # self.clients ahora es un diccionario donde la clave es el objeto 'writer'
-        # y el valor es un dict con el estado y datos del usuario.
-        # self.clients[writer] = {"addr": addr, "state": "connecting", "user": None}
+        # self.clients[writer] = {"addr":..., "state":..., "user":..., "room_id": None}
         self.clients = {}
         
-        # --- Configuración de IPC para Autenticación ---
-        # Ahora 'log.info' está definido y funciona
-        log.info("Iniciando pipe IPC para autenticación...")
-        # parent_conn es para el Server, child_conn es para el Proceso
+        # IPC Autenticación
+        log.info("Iniciando proceso de autenticación...")
         self.auth_pipe_parent, auth_pipe_child = multiprocessing.Pipe()
-        
-        # Iniciar el proceso de autenticación
         self.auth_proc = multiprocessing.Process(
             target=auth_process.auth_process_worker,
             args=(auth_pipe_child,)
         )
         self.auth_proc.start()
-        log.info(f"Proceso de autenticación iniciado (PID: {self.auth_proc.pid}).")
 
-
-    async def authenticate(self, writer: asyncio.StreamWriter, login_message: dict):
-        """
-        Maneja la lógica de autenticación usando el proceso IPC.
-        """
-        addr = writer.get_extra_info('peername')
+    async def authenticate(self, writer, login_message):
+        """Maneja el login vía IPC."""
         user = login_message.get("user")
         pwd = login_message.get("password")
-
-        if not user or not pwd:
-            response_bytes = protocol.create_message("login_fail", message="Usuario y clave requeridos.")
-            writer.write(response_bytes)
-            await writer.drain()
-            return
-
-        # Las llamadas a pipe (send/recv) son bloqueantes.
-        # Las ejecutamos en un hilo separado para no bloquear el loop de asyncio.
+        
         loop = asyncio.get_running_loop()
         request = {"command": "auth", "user": user, "password": pwd}
         
         try:
-            # 1. Enviar la solicitud (bloqueante)
             await loop.run_in_executor(None, self.auth_pipe_parent.send, request)
-            # 2. Recibir la respuesta (bloqueante)
             response = await loop.run_in_executor(None, self.auth_pipe_parent.recv)
 
-            # Procesar la respuesta
             if response.get("status") == "ok":
                 user_data = response.get("user_data", {})
-                log.info(f"Login exitoso para {user} desde {addr}.")
-                # Actualizar el estado del cliente
+                log.info(f"Login OK: {user}")
+                # Estado pasa a 'authenticated', pero aún no tiene sala ('room_id': None)
                 self.clients[writer] = {
-                    "addr": addr,
+                    "addr": writer.get_extra_info('peername'),
                     "state": "authenticated",
-                    "user": user_data
+                    "user": user_data,
+                    "room_id": None
                 }
-                response_bytes = protocol.create_message("login_success", user=user_data)
-                writer.write(response_bytes)
-                await writer.drain()
+                writer.write(protocol.create_message("login_success", user=user_data))
             else:
-                log.warn(f"Login fallido para {user} desde {addr}: {response.get('message')}")
-                response_bytes = protocol.create_message("login_fail", message=response.get("message"))
-                writer.write(response_bytes)
-                await writer.drain()
+                writer.write(protocol.create_message("login_fail", message="Credenciales inválidas"))
+            await writer.drain()
 
         except Exception as e:
-            log.error(f"Error durante la autenticación IPC para {user}: {e}")
-            try:
-                response_bytes = protocol.create_message("login_fail", message="Error interno del servidor.")
-                writer.write(response_bytes)
-                await writer.drain()
-            except ConnectionError:
-                pass # El cliente ya se desconectó
+            log.error(f"Error Auth IPC: {e}")
+            writer.close()
 
+    async def send_room_list(self, writer):
+        """Envía la lista de salas disponibles al cliente."""
+        rooms = await db_manager.get_rooms()
+        writer.write(protocol.create_message("room_list", rooms=rooms))
+        await writer.drain()
 
-    async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        """
-        Corrutina para manejar la conexión de un cliente individual.
-        """
+    async def join_room(self, writer, message):
+        """Une al usuario a una sala y envía el historial."""
+        room_id = message.get("room_id")
+        try:
+            room_id = int(room_id)
+        except (ValueError, TypeError):
+            writer.write(protocol.create_message("error", message="ID de sala inválido"))
+            return
+
+        client_state = self.clients[writer]
+        
+        # Si ya estaba en una sala, avisar que salió primero (opcional, pero limpio)
+        if client_state.get("room_id"):
+             await self.leave_room(writer, None, notify_client=False)
+
+        client_state["room_id"] = room_id
+        client_state["state"] = "in_room"
+        
+        room_name = f"Sala {room_id}" 
+
+        log.info(f"Usuario {client_state['user']['username']} unido a Sala {room_id}")
+        
+        # Obtener historial
+        history = await db_manager.get_chat_history(room_id)
+        
+        writer.write(protocol.create_message("join_success", room_id=room_id, room_name=room_name, history=history))
+        await writer.drain()
+
+        # Avisar a otros en la sala
+        await self.broadcast({
+            "action": "message", 
+            "content": f"--> {client_state['user']['username']} ha entrado a la sala."
+        }, sender_writer=writer, system_msg=True)
+
+    async def leave_room(self, writer, message, notify_client=True):
+        """Saca al usuario de la sala actual y lo devuelve al estado 'authenticated'."""
+        client_state = self.clients.get(writer)
+        if not client_state or not client_state.get("room_id"):
+            return
+
+        old_room_id = client_state["room_id"]
+        username = client_state['user']['username']
+        
+        # 1. Broadcast de despedida a la sala vieja
+        await self.broadcast({
+            "action": "message",
+            "content": f"<-- {username} ha salido de la sala."
+        }, sender_writer=writer, system_msg=True)
+
+        log.info(f"Usuario {username} salió de Sala {old_room_id}")
+
+        # 2. Resetear estado
+        client_state["room_id"] = None
+        client_state["state"] = "authenticated"
+
+        # 3. Confirmar al cliente (solo si fue solicitado explícitamente)
+        if notify_client:
+            writer.write(protocol.create_message("leave_success"))
+            await writer.drain()
+
+    async def handle_message(self, writer, message):
+        """Maneja el envío de mensajes de chat."""
+        client_state = self.clients[writer]
+        room_id = client_state.get("room_id")
+        user_id = client_state["user"]["id"]
+        content = message.get("content")
+
+        if not room_id:
+            return
+
+        # 1. Guardar en BD (Persistencia)
+        await db_manager.save_message(user_id, room_id, content)
+
+        # 2. Broadcast a la sala
+        await self.broadcast(message, sender_writer=writer)
+
+    async def handle_client(self, reader, writer):
         addr = writer.get_extra_info('peername')
-        # Corregido: usar 'log' en lugar de 'logging'
-        log.info(f"Nuevo cliente conectado (en espera de login): {addr}")
-        # Registrar al cliente con estado 'connecting'
-        self.clients[writer] = {"addr": addr, "state": "connecting", "user": None}
+        self.clients[writer] = {"addr": addr, "state": "connecting", "user": None, "room_id": None}
+        log.info(f"Conexión: {addr}")
 
         try:
             while True:
-                data_bytes = await reader.readuntil(MESSAGE_DELIMITER)
-                if not data_bytes:
-                    break
+                data = await reader.readuntil(MESSAGE_DELIMITER)
+                msg = protocol.parse_message(data)
+                if not msg: continue
 
-                message = protocol.parse_message(data_bytes)
-                if not message:
-                    continue
+                action = msg.get("action")
+                state = self.clients[writer]["state"]
 
-                client_state = self.clients[writer]
-                action = message.get("action")
+                if state == "connecting":
+                    if action == "login": await self.authenticate(writer, msg)
+                    else: pass 
                 
-                # --- Lógica de Estado ---
+                elif state == "authenticated":
+                    # Usuario logueado (en el lobby)
+                    if action == "get_rooms": await self.send_room_list(writer)
+                    elif action == "join": await self.join_room(writer, msg)
+                    elif action == "login": pass 
+                    else: writer.write(protocol.create_message("error", message="Debes unirte a una sala."))
                 
-                if client_state["state"] == "connecting":
-                    if action == "login":
-                        await self.authenticate(writer, message)
-                    else:
-                        # Rechazar cualquier otra acción si no está logueado
-                        response_bytes = protocol.create_message("error", message="Debes iniciar sesión primero.")
-                        writer.write(response_bytes)
-                        await writer.drain()
-                
-                elif client_state["state"] == "authenticated":
-                    # El cliente está logueado
-                    if action == "message":
-                        await self.broadcast(message, sender_writer=writer)
-                    # (Aquí irán 'join_room', 'upload_file', etc. en futuras etapas)
-                    else:
-                        response_bytes = protocol.create_message("error", message=f"Acción '{action}' desconocida o no permitida.")
-                        writer.write(response_bytes)
-                        await writer.drain()
+                elif state == "in_room":
+                    # Usuario chateando en sala
+                    if action == "message": await self.handle_message(writer, msg)
+                    elif action == "leave_room": await self.leave_room(writer, msg) # NUEVA ACCIÓN
+                    elif action == "join": await self.join_room(writer, msg) 
+                    elif action == "get_rooms": await self.send_room_list(writer)
 
-        except asyncio.IncompleteReadError:
-            # Corregido: usar 'log' en lugar de 'logging'
-            log.warning(f"Cliente {addr} desconectado (conexión cerrada).")
-        except ConnectionResetError:
-            # Corregido: usar 'log' en lugar de 'logging'
-            log.warning(f"Cliente {addr} desconectado (conexión reseteada).")
         except Exception as e:
-            # Corregido: usar 'log' en lugar de 'logging'
-            log.error(f"Error inesperado con el cliente {addr}: {e}")
+            log.warning(f"Error con cliente {addr}: {e}")
         finally:
-            # Limpiar la conexión
             if writer in self.clients:
-                user_info = self.clients[writer].get('user')
-                username = user_info.get('username') if user_info else 'Desconocido'
-                # Corregido: usar 'log' en lugar de 'logging'
-                log.info(f"Cliente {username} ({addr}) desconectado.")
                 del self.clients[writer]
-                
             writer.close()
             await writer.wait_closed()
-            # Corregido: usar 'log' en lugar de 'logging'
-            log.info(f"Conexión con {addr} cerrada formalmente.")
 
-    async def broadcast(self, message: dict, sender_writer=None):
-        """
-        Envía un mensaje a todos los clientes AUTENTICADOS.
-        """
-        if message.get("action") != "message":
-            return
-
+    async def broadcast(self, message, sender_writer, system_msg=False):
+        """Envía mensaje solo a usuarios en la MISMA sala."""
         sender_state = self.clients.get(sender_writer)
-        if not sender_state or not sender_state.get("user"):
-            # Corregido: usar 'log' en lugar de 'logging'
-            log.warn("Intento de broadcast de un usuario no autenticado.")
-            return
+        if not sender_state: return
 
-        content = message.get("content", "")
-        username = sender_state["user"].get("username", "Anónimo")
+        room_id = sender_state.get("room_id")
+        # Si el usuario ya salió (room_id es None), no podemos hacer broadcast basado en él.
+        # Pero en leave_room guardamos old_room antes de borrarlo, así que el broadcast
+        # se hace antes de borrar el room_id.
         
-        broadcast_msg_bytes = protocol.create_message(
-            "broadcast",
-            sender=username,
-            content=content
-        )
-
-        if not broadcast_msg_bytes:
-            return
-
-        log.info(f"Broadcasting de {username}: {content}")
+        username = sender_state["user"]["username"] if not system_msg else "Sistema"
         
-        for writer, client_state in list(self.clients.items()):
-            # Enviar solo a clientes autenticados y que no sean el remitente
-            if client_state["state"] == "authenticated" and writer != sender_writer:
+        out_msg = protocol.create_message("broadcast", sender=username, content=message.get("content"))
+
+        for target_writer, state in self.clients.items():
+            if state.get("room_id") == room_id:
                 try:
-                    writer.write(broadcast_msg_bytes)
-                    await writer.drain()
-                except ConnectionError:
-                    # Corregido: usar 'log' en lugar de 'logging'
-                    log.warning(f"Error al enviar a {client_state['addr']}, puede estar desconectándose.")
-
+                    target_writer.write(out_msg)
+                    await target_writer.drain()
+                except: pass
 
     async def start(self):
-        """
-        Prepara la BD y luego inicia el servidor.
-        """
-        # 1. Inicializar la Base de Datos
         await db_manager.init_db()
-        
-        # 2. Iniciar el servidor TCP
-        server = await asyncio.start_server(
-            self.handle_client,
-            self.host,
-            self.port
-        )
-
-        addr = server.sockets[0].getsockname()
-        # Corregido: usar 'log' en lugar de 'logging'
-        log.info(f"Servidor SCEE (Etapa 2) escuchando en {addr}")
-
-        async with server:
-            await server.serve_forever()
+        server = await asyncio.start_server(self.handle_client, self.host, self.port)
+        log.info(f"Servidor SCEE Etapa 3.5 en {self.host}:{self.port}")
+        async with server: await server.serve_forever()
 
     def stop(self):
-        """
-        Detiene los procesos hijos (IPC) limpiamente.
-        """
-        # Corregido: usar 'log' en lugar de 'logging'
-        log.info("Deteniendo el servidor y los procesos hijos...")
-        try:
-            # Enviar señal de apagado al proceso de autenticación
-            self.auth_pipe_parent.send({"command": "shutdown"})
-        except Exception as e:
-            # Corregido: usar 'log' en lugar de 'logging'
-            log.error(f"Error al enviar señal de shutdown a auth_process: {e}")
-        
-        # Esperar a que el proceso termine
-        self.auth_proc.join(timeout=3)
-        
-        # Si sigue vivo, forzarlo
-        if self.auth_proc.is_alive():
-            # Corregido: usar 'log' en lugar de 'logging'
-            log.warn("El proceso de autenticación no terminó, forzando terminación.")
-            self.auth_proc.terminate()
-            
-        self.auth_pipe_parent.close()
-        # Corregido: usar 'log' en lugar de 'logging'
-        log.info("Proceso de autenticación detenido.")
-
+        self.auth_pipe_parent.send({"command": "shutdown"})
+        self.auth_proc.join()
 
 if __name__ == "__main__":
-    
-    print("Iniciando servidor (Etapa 2)...")
-    server = Server(HOST, PORT)
-    try:
-        asyncio.run(server.start())
-    except KeyboardInterrupt:
-        # Corregido: usar 'log' en lugar de 'logging'
-        log.info("Servidor detenido por el usuario.")
-    finally:
-        server.stop()
+    srv = Server(HOST, PORT)
+    try: asyncio.run(srv.start())
+    except KeyboardInterrupt: pass
+    finally: srv.stop()

@@ -1,7 +1,7 @@
 # src/db_manager.py
 """
-Módulo para el manejo asíncrono de la base de datos (Etapa 2).
-Usará aiosqlite.
+Módulo para el manejo asíncrono de la base de datos (Etapa 3).
+Incluye manejo de salas y mensajes persistentes.
 """
 
 import logging
@@ -13,15 +13,13 @@ log = logging.getLogger(__name__)
 
 async def init_db():
     """
-    Inicializa la base de datos y crea las tablas si no existen.
-    Inserta datos de prueba.
+    Inicializa la base de datos, tablas y datos semilla.
     """
-    log.info(f"Inicializando base de datos ({DB_TYPE}) en '{DB_NAME}'...")
+    log.info(f"Inicializando base de datos en '{DB_NAME}'...")
     async with aiosqlite.connect(DB_NAME) as db:
-        # Habilitar claves foráneas
         await db.execute("PRAGMA foreign_keys = ON;")
 
-        # --- Tabla de Usuarios ---
+        # Tablas (Usuarios, Salas, Mensajes)
         await db.execute("""
         CREATE TABLE IF NOT EXISTS usuarios (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,8 +28,7 @@ async def init_db():
             rol TEXT NOT NULL CHECK(rol IN ('profesor', 'alumno'))
         );
         """)
-
-        # --- Tabla de Salas ---
+        
         await db.execute("""
         CREATE TABLE IF NOT EXISTS salas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,7 +36,6 @@ async def init_db():
         );
         """)
 
-        # --- Tabla de Mensajes (para Etapa 3) ---
         await db.execute("""
         CREATE TABLE IF NOT EXISTS mensajes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,49 +48,69 @@ async def init_db():
         );
         """)
 
-        # --- Insertar datos de prueba (si no existen) ---
+        # Datos semilla
         try:
             await db.executemany(
                 "INSERT INTO usuarios (username, password, rol) VALUES (?, ?, ?)",
-                [
-                    ('profe', '123', 'profesor'), # Contraseña en texto plano (¡malo!)
-                    ('alumno', '456', 'alumno')
-                ]
+                [('profe', '123', 'profesor'), ('alumno', '456', 'alumno')]
             )
         except aiosqlite.IntegrityError:
-            log.info("Usuarios de prueba ya existen.")
+            pass
 
         try:
             await db.executemany(
                 "INSERT INTO salas (nombre) VALUES (?)",
-                [('General',), ('Física Cuántica',)]
+                [('General',), ('Física I',), ('Matemática II',)]
             )
         except aiosqlite.IntegrityError:
-            log.info("Salas de prueba ya existen.")
+            pass
 
         await db.commit()
-    log.info("Base de datos inicializada correctamente.")
-
+    log.info("Base de datos lista.")
 
 async def verify_user(username, password) -> dict | None:
-    """
-    Verifica las credenciales del usuario en la BD.
-    Devuelve los datos del usuario si es válido, o None si no.
-    """
-    log.info(f"Verificando usuario {username} en la BD...")
     async with aiosqlite.connect(DB_NAME) as db:
-        # Configurar row_factory para obtener resultados como diccionarios
         db.row_factory = aiosqlite.Row
-        
         cursor = await db.execute(
-            "SELECT * FROM usuarios WHERE username = ? AND password = ?",
+            "SELECT id, username, rol FROM usuarios WHERE username = ? AND password = ?",
             (username, password)
         )
-        user_row = await cursor.fetchone()
-        
-        if user_row:
-            log.info(f"Usuario {username} verificado con éxito.")
-            return dict(user_row) # Convertir la Fila (Row) a un dict
-            
-    log.warn(f"Fallo la verificación para el usuario {username}.")
-    return None
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+# --- NUEVAS FUNCIONES ETAPA 3 ---
+
+async def get_rooms() -> list[dict]:
+    """Obtiene la lista de todas las salas."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT id, nombre FROM salas")
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+async def save_message(user_id: int, room_id: int, content: str):
+    """Guarda un mensaje en la base de datos."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT INTO mensajes (usuario_id, sala_id, contenido) VALUES (?, ?, ?)",
+            (user_id, room_id, content)
+        )
+        await db.commit()
+
+async def get_chat_history(room_id: int, limit=20) -> list[dict]:
+    """Recupera los últimos mensajes de una sala."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        # Hacemos JOIN para traer el nombre del usuario
+        query = """
+            SELECT m.contenido, m.timestamp, u.username 
+            FROM mensajes m
+            JOIN usuarios u ON m.usuario_id = u.id
+            WHERE m.sala_id = ?
+            ORDER BY m.timestamp DESC
+            LIMIT ?
+        """
+        cursor = await db.execute(query, (room_id, limit))
+        rows = await cursor.fetchall()
+        # Invertimos la lista para mostrar los más viejos arriba y nuevos abajo
+        return [dict(row) for row in rows][::-1]

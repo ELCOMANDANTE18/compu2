@@ -1,169 +1,181 @@
 # src/client.py
 """
-Cliente CLI interactivo para el sistema SCEE.
-Etapa 2: Implementa flujo de Login.
+Cliente CLI SCEE.
+Etapa 3.5: Navegación completa (Login -> Menu Salas <-> Chat).
 """
 
 import asyncio
 import sys
 import logging
-import getpass # Para ocultar la contraseña
+import getpass
 from .config import HOST, PORT, MESSAGE_DELIMITER
 from . import protocol
 
-logging.basicConfig(level=logging.INFO, format='[CLIENT] %(asctime)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(message)s')
 
-async def listen_to_server(reader: asyncio.StreamReader):
-    """
-    Escucha continuamente los mensajes del servidor y los imprime.
-    """
+async def chat_listener(reader):
+    """Escucha mensajes del servidor mientras se está en una sala."""
     while True:
         try:
-            data_bytes = await reader.readuntil(MESSAGE_DELIMITER)
-            if not data_bytes:
-                logging.warning("El servidor cerró la conexión (data vacía).")
+            data = await reader.readuntil(MESSAGE_DELIMITER)
+            msg = protocol.parse_message(data)
+            if not msg: continue
+            
+            action = msg.get("action")
+            
+            if action == "broadcast":
+                sender = msg.get("sender")
+                content = msg.get("content")
+                print(f"\r[{sender}]: {content}\nTu > ", end="")
+            elif action == "leave_success":
+                # Señal del servidor de que salimos correctamente
+                print("\n<<< Has salido de la sala.")
                 break
+            elif action == "error":
+                print(f"\r[ERROR]: {msg.get('message')}\nTu > ", end="")
                 
-            message = protocol.parse_message(data_bytes)
-            if message:
-                # Manejo de mensajes recibidos
-                action = message.get("action")
-                if action == "broadcast":
-                    sender = message.get("sender", "Sistema")
-                    content = message.get("content", "")
-                    # Imprime el mensaje y vuelve a mostrar el prompt "> "
-                    print(f"\r[{sender}]: {content}\nTu > ", end="")
-                elif action == "error":
-                    # Errores enviados por el servidor
-                    print(f"\r[ERROR Servidor]: {message.get('message', 'Error desconocido')}\nTu > ", end="")
-                else:
-                    # Otros mensajes del sistema
-                    print(f"\r[Sistema]: {message}\nTu > ", end="")
-            
         except asyncio.IncompleteReadError:
-            logging.warning("Conexión perdida con el servidor.")
+            print("\n[!] Desconectado del servidor.")
             break
-        except Exception as e:
-            logging.error(f"Error al leer del servidor: {e}")
+        except asyncio.CancelledError:
+            # Tarea cancelada (normal al salir)
             break
-    logging.info("Saliendo del listener del servidor...")
 
-
-async def send_to_server(writer: asyncio.StreamWriter):
-    """
-    Lee la entrada del usuario (stdin) de forma asíncrona y la envía al servidor.
-    En Etapa 2, ya no necesita el 'username', el servidor lo sabe.
-    """
+async def chat_sender(writer):
+    """Envía mensajes y maneja el comando 'quit' local."""
     loop = asyncio.get_running_loop()
-    
     while True:
         try:
-            # Usamos run_in_executor para ejecutar el 'input' bloqueante
-            # en un hilo separado, sin bloquear el loop de asyncio.
-            # sys.stdin.readline() es una alternativa que captura el \n
-            message_content = await loop.run_in_executor(
-                None, 
-                sys.stdin.readline
-            )
-            message_content = message_content.strip() # Quitar el \n
-
-            if not message_content:
-                continue
-
-            if message_content.lower() == 'quit':
-                logging.info("Desconectando...")
-                break
-
-            # Etapa 2: Solo enviamos la acción y el contenido.
-            # El servidor sabe quiénes somos por nuestra conexión.
-            message_bytes = protocol.create_message(
-                "message",
-                content=message_content
-            )
+            msg = await loop.run_in_executor(None, sys.stdin.readline)
+            msg = msg.strip()
             
-            # --- BLOQUE CORREGIDO ---
-            # El error estaba aquí. Este 'if' necesita 
-            # el código indentado debajo de él.
-            if message_bytes:
-                writer.write(message_bytes)
+            if msg.lower() == "quit":
+                # Enviar señal de salir al servidor
+                writer.write(protocol.create_message("leave_room"))
                 await writer.drain()
-            # --- FIN BLOQUE CORREGIDO ---
+                break # Rompe el bucle de envío
 
-        except Exception as e:
-            logging.error(f"Error al enviar mensaje: {e}")
+            if msg:
+                writer.write(protocol.create_message("message", content=msg))
+                await writer.drain()
+        except:
             break
 
-    # Esta parte se ejecuta fuera del 'while True' cuando se rompe el loop
-    writer.close()
-    await writer.wait_closed()
-    logging.info("Saliendo del sender...")
+async def start_chat_mode(reader, writer):
+    """Maneja la sesión de chat activa."""
+    print("Escribe mensajes. Escribe 'quit' para volver al menú de salas.\nTu > ", end="")
+    
+    listener_task = asyncio.create_task(chat_listener(reader))
+    sender_task = asyncio.create_task(chat_sender(writer))
+    
+    # Esperamos a que cualquiera de las dos termine
+    done, pending = await asyncio.wait(
+        [sender_task, listener_task],
+        return_when=asyncio.FIRST_COMPLETED
+    )
 
-async def main_client():
-    """
-    Función principal del cliente.
-    Implementa el flujo de login.
-    """
-    print("--- Cliente SCEE ---")
-    username = input("Usuario: ")
-    # Usamos getpass para que la contraseña no haga eco en la terminal
-    password = getpass.getpass("Contraseña: ")
+    # --- CORRECCIÓN DE CONCURRENCIA ---
+    if sender_task in done:
+        # Caso: El usuario escribió 'quit' y el sender terminó.
+        # IMPORTANTE: No cancelar el listener todavía. Debemos esperar a recibir
+        # el 'leave_success' del servidor para limpiar el buffer de red.
+        # El listener se cerrará solo cuando llegue ese mensaje.
+        await listener_task
+    else:
+        # Caso: El listener terminó primero (el servidor nos sacó o se cayó la conexión).
+        # Aquí sí debemos cancelar el sender porque está esperando input del usuario.
+        sender_task.cancel()
+        try:
+            await sender_task
+        except asyncio.CancelledError:
+            pass
+
+async def select_room(reader, writer):
+    """Muestra lista y permite elegir sala. Retorna True si entra, False si sale del app."""
+    # 1. Pedir lista
+    writer.write(protocol.create_message("get_rooms"))
+    await writer.drain()
     
-    logging.info(f"Conectando a {HOST}:{PORT} como '{username}'...")
+    # 2. Recibir lista
+    try:
+        data = await reader.readuntil(MESSAGE_DELIMITER)
+        msg = protocol.parse_message(data)
+    except:
+        return False
     
+    print("\n=== MENÚ DE SALAS ===")
+    for room in msg.get("rooms", []):
+        print(f"[{room['id']}] {room['nombre']}")
+    print("---------------------")
+    print("Escribe el ID para entrar, o 'quit' para cerrar el programa.")
+    
+    # 3. Elegir
+    loop = asyncio.get_running_loop()
+    while True:
+        choice = await loop.run_in_executor(None, input, "Opción > ")
+        choice = choice.strip()
+        
+        if choice.lower() == "quit":
+            return False # Salir del programa
+
+        writer.write(protocol.create_message("join", room_id=choice))
+        await writer.drain()
+        
+        # 4. Confirmación
+        data = await reader.readuntil(MESSAGE_DELIMITER)
+        resp = protocol.parse_message(data)
+        
+        if resp.get("action") == "join_success":
+            print(f"\n>>> Unido a {resp.get('room_name')}. Cargando historial...")
+            for old_msg in resp.get("history", []):
+                print(f"[{old_msg['username']}]: {old_msg['contenido']}")
+            print("-" * 30)
+            return True # Entró a sala
+        else:
+            print(f"Error: {resp.get('message')}")
+
+async def main():
+    print("--- SCEE Cliente v0.4 (Navegable) ---")
     try:
         reader, writer = await asyncio.open_connection(HOST, PORT)
-        logging.info("Conectado. Enviando credenciales...")
+    except:
+        print("No se pudo conectar al servidor.")
+        return
 
-        # --- Flujo de Login ---
-        login_msg_bytes = protocol.create_message("login", user=username, password=password)
-        writer.write(login_msg_bytes)
-        await writer.drain()
+    # --- LOGIN ---
+    user = input("Usuario: ")
+    pwd = getpass.getpass("Contraseña: ")
+    writer.write(protocol.create_message("login", user=user, password=pwd))
+    await writer.drain()
+    
+    data = await reader.readuntil(MESSAGE_DELIMITER)
+    resp = protocol.parse_message(data)
+    
+    if resp.get("action") != "login_success":
+        print("Login fallido.")
+        writer.close()
+        return
+    
+    print(f"Hola {resp['user']['username']}!")
 
-        # Esperar respuesta de login
-        login_response_bytes = await reader.readuntil(MESSAGE_DELIMITER)
-        login_response = protocol.parse_message(login_response_bytes)
-
-        if login_response and login_response.get("action") == "login_success":
-            user_data = login_response.get('user', {})
-            logging.info(f"Login exitoso. Bienvenido {user_data.get('username')} (Rol: {user_data.get('rol')})")
-        else:
-            error_msg = login_response.get('message', 'Credenciales incorrectas')
-            logging.error(f"Login fallido: {error_msg}")
-            writer.close()
-            await writer.wait_closed()
-            return # Terminar el cliente
-        # --- Fin Flujo de Login ---
-
-        print("Escribe tus mensajes y presiona Enter. Escribe 'quit' para salir.")
-        print("Tu > ", end="") # Prompt inicial
-
-        # Ejecutamos las dos tareas concurrentemente
-        listen_task = asyncio.create_task(listen_to_server(reader))
-        # 'send_to_server' ya no necesita el username
-        send_task = asyncio.create_task(send_to_server(writer))
-
-        # Esperamos a que cualquiera de las dos tareas termine
-        done, pending = await asyncio.wait(
-            [listen_task, send_task],
-            return_when=asyncio.FIRST_COMPLETED
-        )
-
-        # Cancelamos las tareas pendientes para limpiar
-        for task in pending:
-            task.cancel()
+    # --- BUCLE PRINCIPAL DE NAVEGACIÓN ---
+    while True:
+        # Intentar seleccionar sala
+        ingreso_a_sala = await select_room(reader, writer)
         
-    except ConnectionRefusedError:
-        logging.error("No se pudo conectar al servidor. ¿Está corriendo?")
-    except Exception as e:
-        logging.error(f"Ocurrió un error: {e}")
-    finally:
-        logging.info("Cliente desconectado.")
+        if ingreso_a_sala:
+            # Si entró, iniciar modo chat
+            await start_chat_mode(reader, writer)
+            # Al volver de start_chat_mode, el bucle while se repite (vuelve al menú)
+        else:
+            # Si select_room devolvió False (usuario puso 'quit' en el menú)
+            print("Cerrando sesión...")
+            break
 
+    writer.close()
+    await writer.wait_closed()
+    print("Adiós.")
 
 if __name__ == "__main__":
-    # Para correr el cliente:
-    # python -m src.client
-    try:
-        asyncio.run(main_client())
-    except KeyboardInterrupt:
-        print("\nSaliendo...")
+    try: asyncio.run(main())
+    except KeyboardInterrupt: pass
