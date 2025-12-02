@@ -1,0 +1,30 @@
+--- Entornos Virtuales (¡CRUCIAL!) ---
+
+.venv/
+venv/
+env/
+
+--- Base de Datos (Datos locales) ---
+
+*.db
+*.sqlite
+*.sqlite3
+
+--- Caché de Python (Archivos compilados) ---
+
+pycache/
+*.py[cod]
+*$py.class
+
+--- Logs y Errores ---
+
+*.log
+
+--- Configuración local / Secretos ---
+
+.env
+
+--- Archivos del Sistema Operativo ---
+
+.DS_Store
+Thumbs.db

@@ -1,47 +1,61 @@
 # src/auth_process.py
 """
 Proceso de autenticación (IPC).
-(Stub para Etapa 2)
+Recibe pedidos de autenticación desde el servidor principal vía Pipe
+y los verifica contra la base de datos usando db_manager.
 """
 
 import logging
-from multiprocessing import Pipe
-from . import db_manager # (Eventualmente usará db_manager)
+import asyncio
+from multiprocessing.connection import Connection
+from . import db_manager
 
-def auth_process_worker(pipe_conn: Pipe):
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
+
+def auth_process_worker(pipe_conn: Connection):
     """
     Función que se ejecuta en un proceso separado para manejar la autenticación.
     Escucha pedidos (usuario, clave) desde el pipe y responde.
     """
-    logging.info("Proceso de autenticación iniciado (STUB).")
+    log.info("Proceso de autenticación iniciado.")
+    # Creamos un loop de asyncio para este proceso
+    # loop = asyncio.get_event_loop()
+
     try:
         while True:
             # Bloquea hasta recibir un mensaje del servidor principal
-            request = pipe_conn.recv() 
+            request = pipe_conn.recv()
             if request.get("command") == "shutdown":
+                log.info("Comando 'shutdown' recibido.")
                 break
                 
             if request.get("command") == "auth":
                 user = request.get("user")
                 pwd = request.get("password")
                 
-                # Aquí se llamaría a la lógica de BD (que es async,
-                # pero este proceso puede tener su propio loop si es necesario,
-                # o simplemente usar una conexión de BD sincrónica)
-                logging.info(f"Auth_Process: Verificando {user}...")
+                log.info(f"Auth_Process: Verificando {user}...")
                 
-                # Simulación (la lógica real usaría db_manager)
-                if user.startswith("profe") and pwd == "123":
-                    response = {"status": "ok", "rol": "profesor", "username": user}
-                elif user.startswith("alumno") and pwd == "123":
-                    response = {"status": "ok", "rol": "alumno", "username": user}
-                else:
-                    response = {"status": "error", "message": "Credenciales inválidas"}
+                try:
+                    # Ejecutamos la corrutina de verificación de BD
+                    # en un nuevo loop de asyncio para este proceso.
+                    user_data = asyncio.run(db_manager.verify_user(user, pwd))
+                    
+                    if user_data:
+                        response = {"status": "ok", "user_data": user_data}
+                    else:
+                        response = {"status": "error", "message": "Credenciales inválidas"}
+                
+                except Exception as e:
+                    log.error(f"Error en el worker de autenticación durante verify_user: {e}")
+                    response = {"status": "error", "message": "Error interno del servidor"}
                 
                 pipe_conn.send(response)
 
     except EOFError:
-        logging.info("Proceso de autenticación: Pipe cerrado.")
+        log.info("Proceso de autenticación: Pipe cerrado (normal al apagar).")
+    except Exception as e:
+        log.error(f"Error inesperado en auth_process_worker: {e}")
     finally:
-        logging.info("Proceso de autenticación terminado.")
+        log.info("Proceso de autenticación terminado.")
         pipe_conn.close()

@@ -1,0 +1,7 @@
+#requirements.txt
+#Dependencias para el proyecto SCEE
+#Para la base de datos SQLite asíncrona (Etapa 2+)
+aiosqlite
+asyncpg
+redis
+celery
